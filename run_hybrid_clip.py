@@ -54,11 +54,9 @@ class TrainingArguments:
         default="output/"
     )
     seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
-    num_train_epochs: float = field(default=1.0, metadata={"help": "Total number of training epochs to perform."})
-    per_device_train_batch_size: int = field(
-        default=32, metadata={"help": "Batch size per GPU/TPU core/CPU for training."}
-    )
-    warmup_steps: int = field(default=0, metadata={"help": "Linear warmup over warmup_steps."})
+    num_train_epochs: int = field(default=2, metadata={"help": "Total number of training epochs to perform."})
+    per_device_train_batch_size: int = field(default=32, metadata={"help": "Batch size per GPU/TPU core/CPU for training."})
+    warmup_steps: int = field(default=100, metadata={"help": "Linear warmup over warmup_steps."})
     learning_rate: float = field(default=5e-5, metadata={"help": "The initial learning rate for AdamW."})
     weight_decay: float = field(default=0.0, metadata={"help": "Weight decay for AdamW if we apply some."})
     adam_beta1: float = field(default=0.9, metadata={"help": "Beta1 for AdamW optimizer"})

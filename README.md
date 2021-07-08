@@ -19,7 +19,7 @@ python eval.py output/
 
 This evaluates the model on  the STS benchmark test dataset.
 
-Performances on STS:
-Without training: 9.02
-With training: 43.87
+Performances on STS benchmark test set (Spearman correlation): \
+Without training: 9.02 \
+With training: 50.50  \
 PyTorch reference performance: 77.15
