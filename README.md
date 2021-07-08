@@ -21,5 +21,5 @@ This evaluates the model on  the STS benchmark test dataset.
 
 Performances on STS:
 Without training: 9.02
-With training:
+With training: 43.87
 PyTorch reference performance: 77.15
