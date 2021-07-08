@@ -21,5 +21,5 @@ This evaluates the model on  the STS benchmark test dataset.
 
 Performances on STS benchmark test set (Spearman correlation): \
 Without training: 9.02 \
-With training: 50.50  \
+With training: 39.84  \
 PyTorch reference performance: 77.15
