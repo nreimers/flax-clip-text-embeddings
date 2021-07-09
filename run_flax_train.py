@@ -21,6 +21,7 @@ from flax import jax_utils
 from flax.jax_utils import unreplicate
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, shard, shard_prng_key
+from flax.training.common_utils import onehot
 from modeling_hybrid_clip import FlaxSE
 from transformers import AutoTokenizer, AutoConfig, HfArgumentParser, is_tensorboard_available, set_seed
 
@@ -51,13 +52,13 @@ else:
 @dataclass
 class TrainingArguments:
     output_dir: str = field(
-        default="output/flax-model"
+        default="output/"
     )
     seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
-    num_train_epochs: int = field(default=1, metadata={"help": "Total number of training epochs to perform."})
-    per_device_train_batch_size: int = field(default=256, metadata={"help": "Batch size per GPU/TPU core/CPU for training."})
-    warmup_steps: int = field(default=500, metadata={"help": "Linear warmup over warmup_steps."})
-    learning_rate: float = field(default=2e-5, metadata={"help": "The initial learning rate for AdamW."})
+    num_train_epochs: int = field(default=2, metadata={"help": "Total number of training epochs to perform."})
+    per_device_train_batch_size: int = field(default=32, metadata={"help": "Batch size per GPU/TPU core/CPU for training."})
+    warmup_steps: int = field(default=100, metadata={"help": "Linear warmup over warmup_steps."})
+    learning_rate: float = field(default=5e-5, metadata={"help": "The initial learning rate for AdamW."})
     weight_decay: float = field(default=0.0, metadata={"help": "Weight decay for AdamW if we apply some."})
     adam_beta1: float = field(default=0.9, metadata={"help": "Beta1 for AdamW optimizer"})
     adam_beta2: float = field(default=0.999, metadata={"help": "Beta2 for AdamW optimizer"})
@@ -258,6 +259,8 @@ def main():
         shuffle=True,
         drop_last=True,
         collate_fn=collate_fn,
+        num_workers=64,
+        persistent_workers=True,
     )
 
 
@@ -291,15 +294,11 @@ def main():
     # Setup train state
     state = TrainState.create(apply_fn=model.__call__, params=model.params, tx=adamw, dropout_rng=dropout_rng)
 
-    def cross_entropy(logits, axis):
-        logprobs = jax.nn.log_softmax(logits, axis=axis)
-        nll = jnp.diag(logprobs)
-        ce = -jnp.mean(nll)
-        return ce
 
     def clip_loss(similarity):
-        loss = (cross_entropy(similarity, axis=0) + cross_entropy(similarity, axis=1)) / 2
-        return loss
+        labels = onehot(jnp.expand_dims(jnp.arange(similarity.shape[-1]), axis=0), num_classes=similarity.shape[-1])
+        loss = (optax.softmax_cross_entropy(similarity, labels) + optax.softmax_cross_entropy(similarity.T, labels)) / 2
+        return loss.mean()
 
     # Define gradient update step fn
     def train_step(state, batch):

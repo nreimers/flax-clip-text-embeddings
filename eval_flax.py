@@ -48,7 +48,8 @@ inputs1 = tokenizer(inp1, padding="max_length", max_length=128, return_tensors="
 inputs2 = tokenizer(inp2, padding="max_length", max_length=128, return_tensors="np")
 out = run_model(input_ids1=inputs1['input_ids'], input_ids2=inputs2['input_ids'])
 print(out.text_embeds1.shape)
-scores = jnp.matmul(out.text_embeds1, out.text_embeds2.T)
+# scores = jnp.matmul(out.text_embeds1, out.text_embeds2.T)
+scores = out.logits_per_text1
 cosine_scores = []
 for i in range(len(scores)):
     cosine_scores.append(scores[i][i])
