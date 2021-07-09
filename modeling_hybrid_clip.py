@@ -112,8 +112,9 @@ class FlaxSEModule(nn.Module):
         text_embeds2 = text_embeds2 / jnp.linalg.norm(text_embeds2, axis=-1, keepdims=True)
 
         # cosine similarity as logits
-        logit_scale = jnp.exp(self.logit_scale)
-        logits_per_text1 = jnp.matmul(text_embeds1, text_embeds2.T) * 20 #logit_scale #Don't use a logit scale
+#         logit_scale = jnp.exp(self.logit_scale)
+        logit_scale = 20
+        logits_per_text1 = jnp.matmul(text_embeds1, text_embeds2.T) * logit_scale
         logits_per_text2 = logits_per_text1.T
 
         if not return_dict:
