@@ -10,10 +10,21 @@ inputs1 = tokenizer(["Tensorflow is a super framework", "A man eats spaghetti", 
 inputs2 = tokenizer(["Pytorch is the better software", "A woman eats pasta for dinner", "The largest city in Germany is Berlin"], padding="max_length", max_length=128, return_tensors="np")
 
 @jax.jit
-def run_model(input_ids1, input_ids2):
-   return model(input_ids1=input_ids1, input_ids2=input_ids2)
+def run_model(input_ids1, input_ids2, attention_mask1, attention_mask2):
+    return model(
+       input_ids1=input_ids1,
+       input_ids2=input_ids2,
+       attention_mask1=attention_mask1,
+       attention_mask2=attention_mask2,
+       normalize_embeds=True
+    )
 
-out = run_model(input_ids1=inputs1['input_ids'], input_ids2=inputs2['input_ids'])
+out = run_model(
+    input_ids1=inputs1['input_ids'],
+    input_ids2=inputs2['input_ids'],
+    attention_mask1=inputs1["attention_mask"],
+    attention_mask2=inputs2["attention_mask"],
+)
 print(out.text_embeds1.shape)
 print(jnp.matmul(out.text_embeds1, out.text_embeds2.T) )
 
@@ -46,10 +57,21 @@ assert len(inp1) == len(gold_scores)
 
 inputs1 = tokenizer(inp1, padding="max_length", max_length=128, return_tensors="np")
 inputs2 = tokenizer(inp2, padding="max_length", max_length=128, return_tensors="np")
-out = run_model(input_ids1=inputs1['input_ids'], input_ids2=inputs2['input_ids'])
+
+out = run_model(
+    input_ids1=inputs1['input_ids'],
+    input_ids2=inputs2['input_ids'],
+    attention_mask1=inputs1["attention_mask"],
+    attention_mask2=inputs2["attention_mask"],
+)
+
 print(out.text_embeds1.shape)
-# scores = jnp.matmul(out.text_embeds1, out.text_embeds2.T)
-scores = out.logits_per_text1
+
+text_embeds1 = out.text_embeds1 / jnp.linalg.norm(out.text_embeds1, axis=-1, keepdims=True)
+text_embeds2 = out.text_embeds2 / jnp.linalg.norm(out.text_embeds2, axis=-1, keepdims=True)
+scores = jnp.matmul(text_embeds1, text_embeds2.T) * model.params["logit_scale"]
+
+# scores = out.logits_per_text1
 cosine_scores = []
 for i in range(len(scores)):
     cosine_scores.append(scores[i][i])
