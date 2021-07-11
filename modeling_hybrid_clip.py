@@ -34,8 +34,8 @@ logger = logging.get_logger(__name__)
 
 @flax.struct.dataclass
 class FlaxSEOutput(ModelOutput):
-    logits_per_text1: jax_xla.DeviceArray = None
-    logits_per_text2: jax_xla.DeviceArray = None
+#     logits_per_text1: jax_xla.DeviceArray = None
+#     logits_per_text2: jax_xla.DeviceArray = None
     text_embeds1: jax_xla.DeviceArray = None
     text_embeds2: jax_xla.DeviceArray = None
     text_model_output1: FlaxBaseModelOutputWithPooling = None
@@ -57,7 +57,7 @@ class FlaxSEModule(nn.Module):
         self.text_embed_dim = text_config.hidden_size
         text_module = FLAX_MODEL_MAPPING[self.config.text_config.__class__].module_class
         self.text_model = text_module(text_config, dtype=self.dtype)
-        self.logit_scale = self.param("logit_scale", jax.nn.initializers.ones, [])
+        self.logit_scale = self.param("logit_scale", lambda k, s: jnp.array(20.), [])
 
     def __call__(
         self,
@@ -108,21 +108,21 @@ class FlaxSEModule(nn.Module):
 
 
         # normalized features
-        text_embeds1 = text_embeds1 / jnp.linalg.norm(text_embeds1, axis=-1, keepdims=True)
-        text_embeds2 = text_embeds2 / jnp.linalg.norm(text_embeds2, axis=-1, keepdims=True)
+        # text_embeds1 = text_embeds1 / jnp.linalg.norm(text_embeds1, axis=-1, keepdims=True)
+        # text_embeds2 = text_embeds2 / jnp.linalg.norm(text_embeds2, axis=-1, keepdims=True)
 
         # cosine similarity as logits
 #         logit_scale = jnp.exp(self.logit_scale)
-        logit_scale = 20
-        logits_per_text1 = jnp.matmul(text_embeds1, text_embeds2.T) * logit_scale
-        logits_per_text2 = logits_per_text1.T
+#         logit_scale = 20
+#         logits_per_text1 = jnp.matmul(text_embeds1, text_embeds2.T) * logit_scale
+#         logits_per_text2 = logits_per_text1.T
 
         if not return_dict:
             return (logits_per_text1, logits_per_text2, text_embeds1, text_embeds2, text_outputs1, text_outputs2)
 
         return FlaxSEOutput(
-            logits_per_text1=logits_per_text1,
-            logits_per_text2=logits_per_text2,
+#             logits_per_text1=logits_per_text1,
+#             logits_per_text2=logits_per_text2,
             text_embeds1=text_embeds1,
             text_embeds2=text_embeds2,
             text_model_output1=text_outputs1,

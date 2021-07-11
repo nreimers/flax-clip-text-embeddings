@@ -1,5 +1,4 @@
-
-
+import csv
 import json
 import logging
 import os
@@ -12,6 +11,8 @@ import gzip
 
 import torch
 from tqdm import tqdm
+
+from scipy.stats import spearmanr
 
 import jax
 import jax.numpy as jnp
@@ -57,6 +58,7 @@ class TrainingArguments:
     seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
     num_train_epochs: int = field(default=2, metadata={"help": "Total number of training epochs to perform."})
     per_device_train_batch_size: int = field(default=32, metadata={"help": "Batch size per GPU/TPU core/CPU for training."})
+    per_device_eval_batch_size: int = field(default=32, metadata={"help": "Batch size per GPU/TPU core/CPU for training."})
     warmup_steps: int = field(default=100, metadata={"help": "Linear warmup over warmup_steps."})
     learning_rate: float = field(default=5e-5, metadata={"help": "The initial learning rate for AdamW."})
     weight_decay: float = field(default=0.0, metadata={"help": "Weight decay for AdamW if we apply some."})
@@ -219,6 +221,7 @@ def main():
     # Store some constant
     num_epochs = int(training_args.num_train_epochs)
     train_batch_size = int(training_args.per_device_train_batch_size) * jax.device_count()
+    eval_batch_size = int(training_args.per_device_eval_batch_size) * jax.device_count()
     steps_per_epoch = 100
     total_train_steps = steps_per_epoch * num_epochs
 
@@ -237,6 +240,19 @@ def main():
         return batch
 
     #train_dataset = [["text1", "text2 as w"]]*500
+    
+    # ========= Prediction dataset ==============
+    sts_dataset_path = 'data/stsbenchmark.tsv.gz'
+    inp1 = []
+    inp2 = []
+    gold_scores = []
+    with gzip.open(sts_dataset_path, 'rt', encoding='utf8') as fIn:
+        reader = csv.DictReader(fIn, delimiter='\t', quoting=csv.QUOTE_NONE)
+        for row in reader:
+            if row['split'] == 'test':
+                inp1.append(row['sentence1'])
+                inp2.append(row['sentence2'])
+                gold_scores.append(float(row['score']) / 5.0)  # Normalize score to range 0 ... 1
 
     train_dataset = []
     with gzip.open(data_args.train_file, 'rt') as fIn:
@@ -250,7 +266,9 @@ def main():
 
             if len(train_dataset) >= (train_batch_size*2000):
                 break
-
+    
+    train_dataset = train_dataset[:-10000]
+    eval_dataset = train_dataset[-10000:]
 
     # Create data loaders
     train_loader = torch.utils.data.DataLoader(
@@ -262,7 +280,17 @@ def main():
         num_workers=64,
         persistent_workers=True,
     )
-
+    
+    eval_loader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=eval_batch_size,
+        shuffle=False,
+        drop_last=True,
+        collate_fn=collate_fn,
+        num_workers=64,
+        persistent_workers=True,
+    )
+    
 
 
     # Enable tensorboard only on the master node
@@ -294,7 +322,6 @@ def main():
     # Setup train state
     state = TrainState.create(apply_fn=model.__call__, params=model.params, tx=adamw, dropout_rng=dropout_rng)
 
-
     def clip_loss(similarity):
         labels = onehot(jnp.expand_dims(jnp.arange(similarity.shape[-1]), axis=0), num_classes=similarity.shape[-1])
         loss = (optax.softmax_cross_entropy(similarity, labels) + optax.softmax_cross_entropy(similarity.T, labels)) / 2
@@ -305,33 +332,81 @@ def main():
         dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
         def compute_loss(params):
-            logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
-            loss = clip_loss(logits)
+            outputs = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True, normalize_embeds=False)
+            
+            text_embeds1, text_embeds2 = outputs[:2]
+            
+            # gather embeds
+            text_embeds1 = jax.lax.all_gather(text_embeds1, axis_name="batch")
+            text_embeds2 = jax.lax.all_gather(text_embeds2, axis_name="batch")
+            
+            text_embeds1 = jnp.reshape(text_embeds1, (-1, text_embeds1.shape[-1]))
+            text_embeds2 = jnp.reshape(text_embeds2, (-1, text_embeds2.shape[-1]))
+            
+            # normalize using global batch
+            text_embeds1 = text_embeds1 / jnp.linalg.norm(text_embeds1, axis=-1, keepdims=True)
+            text_embeds2 = text_embeds2 / jnp.linalg.norm(text_embeds2, axis=-1, keepdims=True)
+            
+            similarity = jnp.matmul(text_embeds1, text_embeds2.T) * params["logit_scale"]
+            
+            loss = clip_loss(similarity)
             return loss
 
         grad_fn = jax.value_and_grad(compute_loss)
         loss, grad = grad_fn(state.params)
-        grad = jax.lax.pmean(grad, "batch")
+#         grad = jax.lax.pmean(grad, "batch")
 
         new_state = state.apply_gradients(grads=grad, dropout_rng=new_dropout_rng)
 
         metrics = {"loss": loss, "learning_rate": linear_decay_lr_schedule_fn(state.step)}
-        metrics = jax.lax.pmean(metrics, axis_name="batch")
+#         metrics = jax.lax.pmean(metrics, axis_name="batch")
 
         return new_state, metrics
 
     # Define eval fn
     def eval_step(params, batch):
-        logits = model(**batch, params=params, train=False)[0]
-        loss = clip_loss(logits)
+        outputs = model(**batch, params=params, train=False, normalize_embeds=False)
+        
+          
+        text_embeds1, text_embeds2 = outputs[:2]
+
+        # gather embeds
+        text_embeds1 = jax.lax.all_gather(text_embeds1, axis_name="batch")
+        text_embeds2 = jax.lax.all_gather(text_embeds2, axis_name="batch")
+
+        text_embeds1 = jnp.reshape(text_embeds1, (-1, text_embeds1.shape[-1]))
+        text_embeds2 = jnp.reshape(text_embeds2, (-1, text_embeds2.shape[-1]))
+
+        # normalize using global batch
+        text_embeds1 = text_embeds1 / jnp.linalg.norm(text_embeds1, axis=-1, keepdims=True)
+        text_embeds2 = text_embeds2 / jnp.linalg.norm(text_embeds2, axis=-1, keepdims=True)
+
+        similarity = jnp.matmul(text_embeds1, text_embeds2.T) * params["logit_scale"]
+        loss = clip_loss(similarity)
 
         # summarize metrics
         metrics = {"loss": loss}
-        metrics = jax.lax.pmean(metrics, axis_name="batch")
+#         metrics = jax.lax.pmean(metrics, axis_name="batch")
         return metrics
+    
+    @jax.jit
+    def predict(input_ids1, input_ids2, attention_mask1, attention_mask2, params):
+        out = model(
+            params=params,
+            input_ids1=input_ids1,
+            input_ids2=input_ids2,
+            attention_mask1=attention_mask1,
+            attention_mask2=attention_mask2,
+            normalize_embeds=True
+        )
+        text_embeds1 = out.text_embeds1 / jnp.linalg.norm(out.text_embeds1, axis=-1, keepdims=True)
+        text_embeds2 = out.text_embeds2 / jnp.linalg.norm(out.text_embeds2, axis=-1, keepdims=True)
+        scores = jnp.matmul(text_embeds1, text_embeds2.T) * params["logit_scale"]
+        return scores
 
     # Create parallel version of the train and eval step
     p_train_step = jax.pmap(train_step, "batch", donate_argnums=(0,))
+    p_eval_step = jax.pmap(eval_step, "batch")
 
 
     # Replicate the train state on each device
@@ -385,6 +460,43 @@ def main():
         epochs.write(
             f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate: {train_metric['learning_rate']})"
         )
+        
+        # ======================== Evaluating ==============================
+        eval_metrics = []
+        eval_steps = len(eval_dataset) // eval_batch_size
+        eval_step_progress_bar = tqdm(total=eval_steps, desc="Evaluating...", position=2, leave=False)
+        for batch in eval_loader:
+            # Model forward
+            batch = shard(batch)
+            metrics = p_eval_step(state.params, batch)
+            eval_metrics.append(metrics)
+            eval_step_progress_bar.update(1)
+
+        # normalize eval metrics
+        eval_metrics = get_metrics(eval_metrics)
+        eval_metrics = jax.tree_map(jnp.mean, eval_metrics)
+        
+        # get sst score
+        inputs1 = tokenizer(inp1, padding="max_length", max_length=128, return_tensors="np")
+        inputs2 = tokenizer(inp2, padding="max_length", max_length=128, return_tensors="np")
+        scores = predict(
+            params=unreplicate(state.params),
+            input_ids1=inputs1['input_ids'],
+            input_ids2=inputs2['input_ids'],
+            attention_mask1=inputs1["attention_mask"],
+            attention_mask2=inputs2["attention_mask"],
+        )
+        cosine_scores = []
+        for i in range(len(scores)):
+            cosine_scores.append(scores[i][i])
+        eval_spearman_cosine, _ = spearmanr(gold_scores, cosine_scores)
+        sts_score = "STS test performance: {:.2f}".format(eval_spearman_cosine*100)
+
+        # Print metrics and update progress bar
+        eval_step_progress_bar.close()
+        desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']} | STS test score: {sts_score})"
+        epochs.write(desc)
+        epochs.desc = desc
 
 
         # save checkpoint after each epoch and push checkpoint to the hub
